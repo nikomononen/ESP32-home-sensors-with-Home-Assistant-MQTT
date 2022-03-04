@@ -5,4 +5,4 @@ Sensors
 - AM2302
 - TSL2561
 - GY-SGP30
-- YouCee UV Detection Sensor Module
+- GUVA-S12SD
