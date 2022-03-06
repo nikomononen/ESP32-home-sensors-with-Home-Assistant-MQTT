@@ -9,6 +9,11 @@
 #include <WebServer.h>
 #include "esp32-hal-adc.h" // needed for adc pin reset
 
+struct MQTTMessage {
+  JSONVar json;
+  char* topic;
+};
+
 struct DHT22Data {
   float temperature;
   float humidity;
@@ -51,7 +56,7 @@ int UVPIN = 33;
 
 // MQTT Broker IP address
 IPAddress mqtt_server(127, 0, 0, 1);
-const char* MQTT_UID = "<MQTT_UID>";
+const char* MQTT_UID = "<mqtt_uid";
 
 // Wifi
 const char* ssid = "<ssid>";
@@ -108,7 +113,7 @@ Adafruit_TSL2561_Unified tsl = Adafruit_TSL2561_Unified(TSL2561_ADDR_FLOAT, TSL2
 
 #define BME289_ADDR_FLOAT 0x76
 Adafruit_BME280 bme;
-
+  
 // Device setup, run once
 void setup(void) {
   Serial.begin(115200);
@@ -135,7 +140,8 @@ void setup(void) {
   Serial.println(WiFi.localIP());
 
   // Set up MTQQ
-  if(client.connect(MQTT_UID)) {
+  connect_MQTT();
+  if(client.connected()) {
     register_MQTT_sensors_to_homeassistant();
   }
   
@@ -172,183 +178,139 @@ void setup(void) {
 void register_MQTT_sensors_to_homeassistant(){
   Serial.println("MTQQ connected. Registering Home assistant sensors");
   // Create Home Assistant sensors
-  JSONVar json = new JSONVar();
-  
+      
   // Temperature
-  json["unique_id"] = "esp32-dev-temperature";
-  //json["device_class"] = "temperature";
-  json["name"] = "Temperature";
-  json["state_topic"] = "homeassistant/sensor/esp32dev/state";
-  json["unit_of_measurement"] = "°C";
-  json["value_template"] = "{{ value_json.temperature}}";
-  String jsonString = JSON.stringify(json);
-  char temperature[jsonString.length()+1];
-  jsonString.toCharArray(temperature, jsonString.length()+1);
-  client.publish("homeassistant/sensor/esp32dev/Temperature/config", temperature);
+  JSONVar temperature = new JSONVar();
+  temperature["unique_id"] = "esp32dev-temperature";
+  temperature["name"] = "Temperature";
+  temperature["state_topic"] = "homeassistant/sensor/esp32dev/state";
+  temperature["unit_of_measurement"] = "°C";
+  temperature["value_template"] = "{{ value_json.temperature }}";
   
   // Humidity
-  json = new JSONVar();
-  json["unique_id"] = "esp32-dev-humidity";
-  //json["device_class"] = "humidity";
-  json["name"] = "Temperature";
-  json["state_topic"] = "homeassistant/sensor/esp32dev/state";
-  json["unit_of_measurement"] = "%";
-  json["value_template"] = "{{ value_json.temperature}}";
-  jsonString = JSON.stringify(json);
-  char humidity[jsonString.length()+1];
-  jsonString.toCharArray(humidity, jsonString.length()+1);
-  Serial.println(humidity);
-  client.publish("homeassistant/sensor/esp32dev/Humidity/config", humidity);
+  JSONVar humidity = new JSONVar();
+  humidity["unique_id"] = "esp32dev-humidity";
+  humidity["name"] = "Temperature";
+  humidity["state_topic"] = "homeassistant/sensor/esp32dev/state";
+  humidity["unit_of_measurement"] = "%";
+  humidity["value_template"] = "{{ value_json.temperature }}";
   
   // Feels like
-  json = new JSONVar();
-  json["unique_id"] = "esp32-dev-feelslike";
-  //json["device_class"] = "temperature";
-  json["name"] = "Feels like";
-  json["state_topic"] = "homeassistant/sensor/esp32dev/state";
-  json["unit_of_measurement"] = "°C";
-  json["value_template"] = "{{ value_json.heatIndex}}";  
-  jsonString = JSON.stringify(json);
-  char feelsLike[jsonString.length()+1];
-  jsonString.toCharArray(feelsLike, jsonString.length()+1);
-  Serial.println(feelsLike);
-  client.publish("homeassistant/sensor/esp32dev/Heatindex/config", feelsLike);   
+  JSONVar feelsLike = new JSONVar();
+  feelsLike["unique_id"] = "esp32dev-feelslike";
+  feelsLike["name"] = "Feels like";
+  feelsLike["state_topic"] = "homeassistant/sensor/esp32dev/state";
+  feelsLike["unit_of_measurement"] = "°C";
+  feelsLike["value_template"] = "{{ value_json.heatIndex }}";  
   
   // Luminosity
-  json = new JSONVar();
-  json["unique_id"] = "esp32-dev-illuminance";
-  //json["device_class"] = "illuminance";
-  json["name"] = "Luminosity";
-  json["state_topic"] = "homeassistant/sensor/esp32dev/state";
-  json["unit_of_measurement"] = "lux";
-  json["value_template"] = "{{ value_json.luminosity}}";
-  jsonString = JSON.stringify(json);
-  char luminosity[jsonString.length()+1];
-  jsonString.toCharArray(luminosity, jsonString.length()+1);
-  Serial.println(luminosity);
-  client.publish("homeassistant/sensor/esp32dev/Luminosity/config", luminosity);
+  JSONVar luminosity = new JSONVar();
+  luminosity["unique_id"] = "esp32dev-illuminance";
+  luminosity["name"] = "Luminosity";
+  luminosity["state_topic"] = "homeassistant/sensor/esp32dev/state";
+  luminosity["unit_of_measurement"] = "lux";
+  luminosity["value_template"] = "{{ value_json.luminosity }}";
   
   // UV light
-  json = new JSONVar();
-  json["unique_id"] = "esp32-dev-uvIndex";
-  json["name"] = "UV light";
-  json["state_topic"] = "homeassistant/sensor/esp32dev/state";
-  json["unit_of_measurement"] = "";
-  json["value_template"] = "{{ value_json.uv}}";  
-  jsonString = JSON.stringify(json);
-  char uv[jsonString.length()+1];
-  jsonString.toCharArray(uv, jsonString.length()+1);
-  Serial.println(uv);
-  client.publish("homeassistant/sensor/esp32devUvIndex/config", uv);
-  Serial.println("Home assistant sensors registered.");
-
-  // TVOC light
-  json = new JSONVar();
-  json["unique_id"] = "esp32-dev-tvoc";
-  json["name"] = "TVOC";
-  json["state_topic"] = "homeassistant/sensor/esp32dev/state";
-  json["unit_of_measurement"] = "";
-  json["value_template"] = "{{ value_json.tvoc}}";  
-  jsonString = JSON.stringify(json);
-  char tvoc[jsonString.length()+1];
-  jsonString.toCharArray(tvoc, jsonString.length()+1);
-  Serial.println(tvoc);
-  client.publish("homeassistant/sensor/esp32devTVOC/config", tvoc);
-
+  JSONVar uv = new JSONVar();
+  uv["unique_id"] = "esp32dev-uvIndex";
+  uv["name"] = "UV light";
+  uv["state_topic"] = "homeassistant/sensor/esp32dev/state";
+  uv["unit_of_measurement"] = "";
+  uv["value_template"] = "{{ value_json.uv }}"; 
+  
+  // TVOC
+  JSONVar tvoc = new JSONVar();
+  tvoc["unique_id"] = "esp32dev-tvoc";
+  tvoc["name"] = "TVOC";
+  tvoc["state_topic"] = "homeassistant/sensor/esp32dev/SGP30/state";
+  tvoc["unit_of_measurement"] = "ppb";
+  tvoc["value_template"] = "{{ value_json.tvoc }}";  
+  
   // CO2
-  json = new JSONVar();
-  json["unique_id"] = "esp32-dev-co2";
-  json["name"] = "CO2";
-  json["state_topic"] = "homeassistant/sensor/esp32dev/state";
-  json["unit_of_measurement"] = "";
-  json["value_template"] = "{{ value_json.co2}}";  
-  jsonString = JSON.stringify(json);
-  char co2[jsonString.length()+1];
-  jsonString.toCharArray(co2, jsonString.length()+1);
-  Serial.println(co2);
-  client.publish("homeassistant/sensor/esp32devCO2/config", co2);
+  JSONVar co2 = new JSONVar();
+  co2["unique_id"] = "esp32dev-co2";
+  co2["name"] = "eCO2";
+  co2["state_topic"] = "homeassistant/sensor/esp32dev/SGP30/state";
+  co2["unit_of_measurement"] = "ppm";
+  co2["value_template"] = "{{ value_json.co2 }}";  
   
   // H2
-  json = new JSONVar();
-  json["unique_id"] = "esp32-dev-h2";
-  json["name"] = "H2";
-  json["state_topic"] = "homeassistant/sensor/esp32dev/state";
-  json["unit_of_measurement"] = "";
-  json["value_template"] = "{{ value_json.h2}}";  
-  jsonString = JSON.stringify(json);
-  char h2[jsonString.length()+1];
-  jsonString.toCharArray(h2, jsonString.length()+1);
-  Serial.println(h2);
-  client.publish("homeassistant/sensor/esp32devH2/config", h2);
+  JSONVar h2 = new JSONVar();
+  h2["unique_id"] = "esp32dev-h2";
+  h2["name"] = "H2";
+  h2["state_topic"] = "homeassistant/sensor/esp32dev/SGP30/state";
+  h2["unit_of_measurement"] = "ppm";
+  h2["value_template"] = "{{ value_json.h2 }}";  
   
   // Ethanol
-  json = new JSONVar();
-  json["unique_id"] = "esp32-dev-ethanol";
-  json["name"] = "Ethanol";
-  json["state_topic"] = "homeassistant/sensor/esp32dev/state";
-  json["unit_of_measurement"] = "";
-  json["value_template"] = "{{ value_json.ethanol}}";  
-  jsonString = JSON.stringify(json);
-  char ethanol[jsonString.length()+1];
-  jsonString.toCharArray(ethanol, jsonString.length()+1);
-  Serial.println(ethanol);
-  client.publish("homeassistant/sensor/esp32devEthanol/config", ethanol);
-
+  JSONVar ethanol = new JSONVar();
+  ethanol["unique_id"] = "esp32dev-ethanol";
+  ethanol["name"] = "Ethanol";
+  ethanol["state_topic"] = "homeassistant/sensor/esp32dev/SGP30/state";
+  ethanol["unit_of_measurement"] = "ppm";
+  ethanol["value_template"] = "{{ value_json.ethanol }}";  
+  
   // BME280 Temperature
-  json = new JSONVar();
-  json["unique_id"] = "esp32-dev-bme280-temperature";
-  //json["device_class"] = "temperature";
-  json["name"] = "BME280 Temperature";
-  json["state_topic"] = "homeassistant/sensor/esp32dev/state";
-  json["unit_of_measurement"] = "°C";
-  json["value_template"] = "{{ value_json.bme280_temperature}}";
-  jsonString = JSON.stringify(json);
-  char bme280temperature[jsonString.length()+1];
-  jsonString.toCharArray(bme280temperature, jsonString.length()+1);
-  Serial.println(bme280temperature);
-  client.publish("homeassistant/sensor/esp32dev/BME280-Temperature/config", bme280temperature);
- 
+  JSONVar bme280temperature = new JSONVar();
+  bme280temperature["unique_id"] = "esp32dev-bme280-temp";
+  bme280temperature["name"] = "BME280 Temperature";
+  bme280temperature["state_topic"] = "homeassistant/sensor/esp32dev/BME280/state";
+  bme280temperature["unit_of_measurement"] = "°C";
+  bme280temperature["value_template"] = "{{ value_json.bme280_temp }}";
+  
   // BME280 Humidity
-  json = new JSONVar();
-  json["unique_id"] = "esp32-dev-bme280-humidity";
-  //json["device_class"] = "temperature";
-  json["name"] = "BME280 Humidity";
-  json["state_topic"] = "homeassistant/sensor/esp32dev/state";
-  json["unit_of_measurement"] = "%";
-  json["value_template"] = "{{ value_json.bme280_humidity}}";
-  jsonString = JSON.stringify(json);
-  char bme280humidity[jsonString.length()+1];
-  jsonString.toCharArray(bme280humidity, jsonString.length()+1);
-  Serial.println(bme280humidity);
-  client.publish("homeassistant/sensor/esp32dev/BME280-Humidity/config", bme280humidity);
+  JSONVar bme280Humidity = new JSONVar();
+  bme280Humidity["unique_id"] = "esp32dev-bme280-humidity";
+  bme280Humidity["name"] = "BME280 Humidity";
+  bme280Humidity["state_topic"] = "homeassistant/sensor/esp32dev/BME280/state";
+  bme280Humidity["unit_of_measurement"] = "%";
+  bme280Humidity["value_template"] = "{{ value_json.bme280_humidity }}";
   
   // BME280 Preassure
-  json = new JSONVar();
-  json["unique_id"] = "esp32-dev-bme280-preassure";
-  //json["device_class"] = "temperature";
-  json["name"] = "BME280 Preassure";
-  json["state_topic"] = "homeassistant/sensor/esp32dev/state";
-  json["unit_of_measurement"] = "hPa";
-  json["value_template"] = "{{ value_json.bme280_preassure}}";
-  jsonString = JSON.stringify(json);
-  char bme280preassure[jsonString.length()+1];
-  jsonString.toCharArray(bme280preassure, jsonString.length()+1);
-  Serial.println(bme280preassure);
-  client.publish("homeassistant/sensor/esp32dev/BME280-Preassure/config", bme280preassure);
-
+  JSONVar bme280Preassure = new JSONVar();
+  bme280Preassure["unique_id"] = "esp32dev-bme280-pres";
+  bme280Preassure["name"] = "BME280 Preassure";
+  bme280Preassure["state_topic"] = "homeassistant/sensor/esp32dev/BME280/state";
+  bme280Preassure["unit_of_measurement"] = "hPa";
+  bme280Preassure["value_template"] = "{{ value_json.bme280_pres }}";
+  
   // BME280 Approximate altitude
-  json = new JSONVar();
-  json["unique_id"] = "esp32-dev-bme280-altitude";
-  //json["device_class"] = "temperature";
-  json["name"] = "BME280 Altitude";
-  json["state_topic"] = "homeassistant/sensor/esp32dev/state";
-  json["unit_of_measurement"] = "hPa";
-  json["value_template"] = "{{ value_json.bme280_altitude}}";
-  jsonString = JSON.stringify(json);
-  char bme280altitude[jsonString.length()+1];
-  jsonString.toCharArray(bme280altitude, jsonString.length()+1);
-  Serial.println(bme280altitude);
-  client.publish("homeassistant/sensor/esp32dev/BME280-Altitude/config", bme280altitude);
+  JSONVar bme280Altitude= new JSONVar();
+  bme280Altitude["unique_id"] = "esp32dev-bme280-altitude";
+  bme280Altitude["name"] = "BME280 Altitude";
+  bme280Altitude["state_topic"] = "homeassistant/sensor/esp32dev/BME280/state";
+  bme280Altitude["unit_of_measurement"] = "m";
+  bme280Altitude["value_template"] = "{{ value_json.bme280_altitude }}";
+
+  // Publish sensors to MQTT
+  byte sensorCount = 13;
+  MQTTMessage sensors[] = {
+    {temperature,       "homeassistant/sensor/esp32dev/Temperature/config"},
+    {humidity,          "homeassistant/sensor/esp32dev/Humidity/config"},
+    {feelsLike,         "homeassistant/sensor/esp32dev/Heatindex/config"},
+    {luminosity,        "homeassistant/sensor/esp32dev/Luminosity/config"},
+    {uv,                "homeassistant/sensor/esp32dev/UvIndex/config"},
+    {tvoc,              "homeassistant/sensor/esp32dev/TVOC/config"},
+    {co2,               "homeassistant/sensor/esp32dev/CO2/config"},
+    {h2,                "homeassistant/sensor/esp32dev/H2/config"},
+    {ethanol,           "homeassistant/sensor/esp32dev/Ethanol/config"},
+    {bme280temperature, "homeassistant/sensor/esp32dev/BME280Temp/config"},
+    {bme280Humidity,    "homeassistant/sensor/esp32dev/BME280Hum/config"},
+    {bme280Preassure,   "homeassistant/sensor/esp32dev/BME280Pres/config"},
+    {bme280Altitude,    "homeassistant/sensor/esp32dev/BME280Alt/config"},
+  };
+  
+  for (byte i = 0; i < sensorCount; i++) {
+    MQTTMessage sensor = sensors[i];
+    String jsonString = JSON.stringify(sensor.json);
+    byte stringLength = jsonString.length() + 1;
+    char payload[stringLength];
+    jsonString.toCharArray(payload, stringLength);
+    Serial.println(sensor.topic);
+    Serial.println(payload);
+    client.publish(sensor.topic, payload);
+  }
   
   Serial.println("Home assistant sensors registered.");
 }
@@ -566,15 +528,6 @@ TSL2561Data read_luminosity(){
   return data;
 }
 
-/*
- * Helper to transform String to charArray
- */
-const char* stringToCharArray(String message){
-  char plain[message.length()];
-  message.toCharArray(plain, message.length());
-  return plain;
-}
-
 uint16_t getUvIndex(uint16_t sensorValue){
   uint16_t index = 0;
   
@@ -609,6 +562,20 @@ uint16_t getUvIndex(uint16_t sensorValue){
   return index;
 }
 
+void connect_MQTT() {
+  // Loop until we're reconnected
+  while (!client.connected()) {
+    Serial.print("Attempting MQTT connection...");
+    // Attempt to connect
+    if (client.connect(MQTT_UID)) {
+      Serial.println("connected");
+    } else {
+      // Wait 1 seconds before retrying
+      delay(1000);
+    }
+  }
+}
+
 // Last time bublished to MQTT
 long lastMsg = 0;
 
@@ -619,6 +586,7 @@ unsigned long interval = 30000;
 // Main loop
 void loop(void) {
   unsigned long currentMillis = millis();
+  
   // if WiFi is down, try reconnecting
   if ((WiFi.status() != WL_CONNECTED) && (currentMillis - previousMillis >= interval)) {
     Serial.print(millis());
@@ -627,9 +595,8 @@ void loop(void) {
     WiFi.disconnect();
     WiFi.reconnect();
     
-    if( client.connect(MQTT_UID)) {
-      Serial.println("MTQQ connected");
-    }
+    // Set up MQTT
+    connect_MQTT();
     
     previousMillis = currentMillis;
   }
@@ -640,23 +607,23 @@ void loop(void) {
   // Publish to MTQQ every 1min
   if (currentMillis - lastMsg > 1000*60) {
     lastMsg = currentMillis;
-    Serial.println("Staring to publish MTTQ");
-    
+   
     // Read sensors
     DHT22Data temperature = read_dht();
     TSL2561Data luminosity = read_luminosity();
     SGP30Data sgp30 = read_sgp30();
     BME280Data bme280 = read_bme280();
 
-    // Set up MTQQ
-    if( client.connect(MQTT_UID)) {
-      Serial.println("MTQQ connected");
-      
-      // Register sensors. This is needed if homeassistant is restarted so that sensor data shows up again
-      register_MQTT_sensors_to_homeassistant();
+    // Set up MQTT
+    connect_MQTT();
+    
+    Serial.println("Staring to publish MTTQ");
+    if(client.connected()) {
+      // Register MQTT sensors
+      register_MQTT_sensors_to_homeassistant();  
       
       // Publish to MQTT
-      JSONVar json;
+      JSONVar json = new JSONVar();
       
       // Temperature
       json["temperature"] = temperature.temperature;
@@ -673,38 +640,54 @@ void loop(void) {
       // UV
       json["uv"] = luminosity.uvIndex;
 
+      JSONVar sgp30Json = new JSONVar();
+      
       // TVOC
-      json["tvoc"] = sgp30.tvoc;
-      json["tvocBase"] = sgp30.tvoc_base;
+      sgp30Json["tvoc"] = sgp30.tvoc;
+      sgp30Json["tvocBase"] = sgp30.tvoc_base;
       
       // CO2
-      json["co2"] = sgp30.co2;
-      json["co2Base"] = sgp30.co2_base;
+      sgp30Json["co2"] = sgp30.co2;
+      sgp30Json["co2Base"] = sgp30.co2_base;
 
       // H2
-      json["h2"] = sgp30.h2;
+      sgp30Json["h2"] = sgp30.h2;
       
       // Ethanol
-      json["ethanol"] = sgp30.ethanol;
+      sgp30Json["ethanol"] = sgp30.ethanol;
 
+      JSONVar bme280Json = new JSONVar();
+      
       // BME280 temperature
-      json["bme280_temperature"] = bme280.temperature;
+      bme280Json["bme280_temp"] = bme280.temperature;
 
       // BME280 humidity
-      json["bme280_humidity"] = bme280.humidity;
+      bme280Json["bme280_humidity"] = bme280.humidity;
 
       // BME280 preassure
-      json["bme280_preassure"] = bme280.preassure;
+      bme280Json["bme280_pres"] = bme280.preassure;
 
-      // BME280 altitudr
-      json["bme280_altitude"] = bme280.approximateAltitude;
+      // bme280Json altitude
+      bme280Json["bme280_alt"] = bme280.approximateAltitude;
       
-      // Return JSON
-      String jsonString = JSON.stringify(json);
-      char plain[jsonString.length()+1];
-      jsonString.toCharArray(plain, jsonString.length()+1);
-      Serial.println(plain);
-      client.publish("homeassistant/sensor/esp32dev/state", plain);
+     MQTTMessage sensors[] = {
+        {json,        "homeassistant/sensor/esp32dev/state"},
+        {sgp30Json,   "homeassistant/sensor/esp32dev/SGP30/state"},
+        {bme280Json,  "homeassistant/sensor/esp32dev/BME280/state"}
+      };
+      byte sensorCount = 3;
+      
+      for (byte i = 0; i < sensorCount; i++) {
+        MQTTMessage sensor = sensors[i];
+        String jsonString = JSON.stringify(sensor.json);
+        byte stringLength = jsonString.length() + 1;
+        char payload[stringLength];
+        jsonString.toCharArray(payload, stringLength);
+        Serial.println(sensor.topic);
+        Serial.println(payload);
+        client.publish(sensor.topic, payload);
+      }
+
       Serial.println("Finished to publish MTTQ");
     }
   }
