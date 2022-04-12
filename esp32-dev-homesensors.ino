@@ -66,8 +66,8 @@ struct BME280Data {
 
 //--- Globals ---//
 // Wifi
-const char* ssid = "<SSID";
-const char* password = "<PASSWORD";
+const char* ssid = "<SSID>";
+const char* password = "<PASSWORD>";
 
 WebServer server(80);
 // MQTT client attached to wificlient
@@ -428,7 +428,7 @@ void configure_sgp30_sensor(){
   }
   
   // Initials to EEPROM
-  //SGP30_baselines = {57330, 39050};
+  //SGP30_baselines = {36455, 36704};
   //EEPROM.put(0, SGP30_baselines);
   //EEPROM.commit();
   
@@ -444,19 +444,18 @@ void configure_sgp30_sensor(){
   if (!SGP.IAQinit()){
     Serial.println("IAQ init failed");
   }
-  
-  // If you have a baseline measurement from 
-  // before you can assign it to start, to 'self-calibrate'
-  Serial.println("Setting SGP30 baselines");
-  Serial.print("eCO2: ");Serial.print(SGP30_baselines.eCO2);Serial.print(" TVOC: ");Serial.println(SGP30_baselines.TVOC);
-  SGP.setIAQBaseline(SGP30_baselines.eCO2, SGP30_baselines.TVOC);
-  
+
   // Read temperature and humidity from DHT22
   DHT22Data dht22 = read_dht();
   Serial.println("Setting SGP30 absolute humidity");
   Serial.print("°C: ");Serial.print(dht22.temperature);Serial.print(" RH%: ");Serial.println(dht22.humidity);
   SGP.setHumidity(getAbsoluteHumidity(dht22.temperature, dht22.humidity));
   
+  // If you have a baseline measurement from 
+  // before you can assign it to start, to 'self-calibrate'
+  Serial.println("Setting SGP30 baselines");
+  Serial.print("eCO2: ");Serial.print(SGP30_baselines.eCO2);Serial.print(" TVOC: ");Serial.println(SGP30_baselines.TVOC);
+  SGP.setIAQBaseline(SGP30_baselines.eCO2, SGP30_baselines.TVOC);
 }
 
 /*
@@ -580,15 +579,12 @@ SGP30Data read_sgp30() {
   uint16_t h2 = SGP.rawH2;
   uint16_t ethanol = SGP.rawEthanol;
   
-  // Baselines
-  uint16_t TVOC_base;
-  uint16_t eCO2_base ;
-  
   // Recalibrate baseline once in 24 hours, sensor reading is once a minute
   sgp30_readings += 1;
   if (sgp30_readings > 60 * 24) {
     Serial.println("Reading SGP30 baselines");
-    
+    uint16_t TVOC_base;
+    uint16_t eCO2_base;
     if (SGP.getIAQBaseline(&eCO2_base, &TVOC_base)) {
       Serial.print("Baseline values: eCO2: "); Serial.print(eCO2_base); Serial.print(" & TVOC: "); Serial.println(TVOC_base);
       // Save baselines to EEPROM
@@ -602,7 +598,7 @@ SGP30Data read_sgp30() {
     sgp30_readings = 0;
   }
   
-  SGP30Data data = {tvoc, TVOC_base, co2, eCO2_base, h2, ethanol};
+  SGP30Data data = {tvoc, SGP30_baselines.TVOC, co2, SGP30_baselines.eCO2, h2, ethanol};
   return data;
 }
 
