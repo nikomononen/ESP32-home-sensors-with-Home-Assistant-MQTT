@@ -1,19 +1,38 @@
+// Sensors
 #include <Adafruit_Sensor.h>
 #include <Adafruit_TSL2561_U.h>
 #include <Adafruit_BME280.h>
-#include "SGP30.h"
+#include <Adafruit_SGP30.h>
 #include <DHT.h>
-#include <Arduino_JSON.h>
+
+// Networking
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <WebServer.h>
-#include "esp32-hal-adc.h" // needed for adc pin reset
 
+// ESP32
+#include <esp32-hal-adc.h>
+#include <soc/soc.h>
+#include <soc/rtc_cntl_reg.h>
+#include <EEPROM.h>
+
+// Utils
+#include <Arduino_JSON.h>
+
+// MQTT struct to hold payload and topic to publish
 struct MQTTMessage {
   JSONVar json;
   char* topic;
 };
 
+// SGP30 baselines struct stored in eeprom 
+struct SGP30Baselines
+{
+    uint16_t eCO2;
+    uint16_t TVOC;
+};
+
+// Sensor data structs
 struct DHT22Data {
   float temperature;
   float humidity;
@@ -26,16 +45,16 @@ struct TSL2561Data {
   uint16_t luminosity;
   uint16_t broadband;
   uint16_t infrared;
-  int uvIndex;
+  uint16_t uvIndex;
 };
 
 struct SGP30Data {
-  float tvoc;
+  uint16_t tvoc;
   uint16_t tvoc_base;
-  float co2;
+  uint16_t co2;
   uint16_t co2_base;
-  float h2;
-  float ethanol;
+  uint16_t h2;
+  uint16_t ethanol;
 };
 
 struct BME280Data {
@@ -45,22 +64,10 @@ struct BME280Data {
   float approximateAltitude;
 };
 
-#define SEALEVELPRESSURE_HPA (1013.25)
-
-// DHT 22 temperature and humidity sensor
-#define DHTTYPE DHT22
-int DHTPIN = 4;
-
-// UV sensor
-int UVPIN = 33;
-
-// MQTT Broker IP address
-IPAddress mqtt_server(127, 0, 0, 1);
-const char* MQTT_UID = "<mqtt_uid";
-
+//--- Globals ---//
 // Wifi
-const char* ssid = "<ssid>";
-const char* password = "<password>";
+const char* ssid = "<SSID";
+const char* password = "<PASSWORD";
 
 WebServer server(80);
 // MQTT client attached to wificlient
@@ -69,7 +76,7 @@ WiFiClient espClient;
 /*
  * MQTT callback handler
  */
-void callback(char* topic, byte* message, unsigned int length) {
+void mqtt_callback(char* topic, byte* message, unsigned int length) {
   Serial.print("Message arrived on topic: ");
   Serial.print(topic);
   Serial.print(". Message: ");
@@ -82,12 +89,40 @@ void callback(char* topic, byte* message, unsigned int length) {
   Serial.println();
 }
 
-PubSubClient client(mqtt_server, 1883, callback, espClient);
+// MQTT Broker IP address
+IPAddress mqtt_server(0, 0, 0, 0);
+const char* MQTT_UID = "esp32dev";
 
-// SGP30 and DHT22 sensors
-SGP30 SGP;
+// ID for MQTT connection
+uint16_t MQTT_ID = 0;
+bool register_MQTT_sensors;
+
+PubSubClient client(mqtt_server, 1883, mqtt_callback, espClient);
+
+// SGP30 
+Adafruit_SGP30 SGP;
+SGP30Baselines SGP30_baselines;
+
+// DHT22 sensor
+#define DHTTYPE DHT22
+int DHTPIN = 4;
 DHT dht(DHTPIN, DHTTYPE);
 
+/*
+ * https://github.com/adafruit/Adafruit_SGP30/blob/master/examples/sgp30test/sgp30test.ino
+ * 
+ * return absolute humidity [mg/m^3] with approximation formula
+ * @param temperature [°C]
+ * @param humidity [%RH]
+ */
+uint32_t getAbsoluteHumidity(float temperature, float humidity) {
+    // approximation formula from Sensirion SGP30 Driver Integration chapter 3.15
+    const float absoluteHumidity = 216.7f * ((humidity / 100.0f) * 6.112f * exp((17.62f * temperature) / (243.12f + temperature)) / (273.15f + temperature)); // [g/m^3]
+    const uint32_t absoluteHumidityScaled = static_cast<uint32_t>(1000.0f * absoluteHumidity); // [mg/m^3]
+    return absoluteHumidityScaled;
+}
+
+// TSL2561 Luminosity Sensor
 /* I2C
  *  
  * The ADDR pin can be used if you have an i2c address conflict, to change the address
@@ -99,29 +134,41 @@ DHT dht(DHTPIN, DHTTYPE);
  * If you do end up using it, use a 10K-100K pullup from INT to 3.3V (vcc)
  * 
  */
-// TSL2561 Luminosity Sensor
-// I2C address:
 #define TSL2561_SEL_LOW 0x29
 #define TSL2561_ADDR_FLOAT 0x39
 #define TSL2561_HIGH 0x49
 #define TSL2561_UNIQUE_ID 12345
+
+// UV sensor
+uint16_t UVPIN = 33;
+
 // The address will be different depending on whether you leave
 // the ADDR pin float (addr 0x39), or tie it to ground or vcc. In those cases
 // use TSL2561_ADDR_LOW (0x29) or TSL2561_ADDR_HIGH (0x49) respectively
-
 Adafruit_TSL2561_Unified tsl = Adafruit_TSL2561_Unified(TSL2561_ADDR_FLOAT, TSL2561_UNIQUE_ID);
 
+// BME289
 #define BME289_ADDR_FLOAT 0x76
+#define SEALEVELPRESSURE_HPA (1013.25)
 Adafruit_BME280 bme;
-  
-// Device setup, run once
+
+//--- End globals ---//
+
+/* 
+ * Device setup, run once
+ */
 void setup(void) {
   Serial.begin(115200);
-  while ( !Serial ) delay(100);   // wait for native usb
   
-  // Start DHT22 sensor
-  dht.begin();
-  
+  // Disable brownout detector
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
+
+  // Wait for serial
+  while (!Serial) delay(100);
+
+  // Init EEPROM
+  EEPROM.begin(255);
+    
   // Establsih wifi connection
   //WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
@@ -139,14 +186,11 @@ void setup(void) {
   Serial.print("IP address: ");
   Serial.println(WiFi.localIP());
 
-  // Set up MTQQ
+  // Set up MTQQ and register sensors if successfully connected
+  register_MQTT_sensors = true;
   connect_MQTT();
-  if(client.connected()) {
-    register_MQTT_sensors_to_homeassistant();
-  }
   
   // Start HTTP server and set handlers
-  server.on("/", handleRoot);
   
   // Temperature
   server.on("/DHT22", handleDHT22);
@@ -159,7 +203,10 @@ void setup(void) {
   
   Serial.println("HTTP server started"); 
   
-  // Configure TSL2561 Luminousity sensor
+  // Start DHT22 sensor
+  dht.begin();
+  
+  // Start and configure TSL2561 Luminousity sensor
   if(!tsl.begin())
   {
     /* There was a problem detecting the TSL2561 ... check your connections */
@@ -167,16 +214,19 @@ void setup(void) {
     while(1);
   }
   configure_tls25621_sensor();
-  
+ 
   // Configure SGP32 sensor
   configure_sgp30_sensor();
 
-  // Configure bme280 sensor
+  // Configure BME280 sensor
   configure_bme280_sensor();
 }
 
+/*
+ * Register sensors to homeassistant with MQTT integration
+ */
 void register_MQTT_sensors_to_homeassistant(){
-  Serial.println("MTQQ connected. Registering Home assistant sensors");
+  Serial.println("Registering Home assistant MQTT sensors");
   // Create Home Assistant sensors
       
   // Temperature
@@ -185,7 +235,7 @@ void register_MQTT_sensors_to_homeassistant(){
   temperature["name"] = "Temperature";
   temperature["state_topic"] = "homeassistant/sensor/esp32dev/state";
   temperature["unit_of_measurement"] = "°C";
-  temperature["value_template"] = "{{ value_json.temperature }}";
+  temperature["value_template"] = "{{ value_json.temperature | round(1) }}";
   
   // Humidity
   JSONVar humidity = new JSONVar();
@@ -193,7 +243,7 @@ void register_MQTT_sensors_to_homeassistant(){
   humidity["name"] = "Temperature";
   humidity["state_topic"] = "homeassistant/sensor/esp32dev/state";
   humidity["unit_of_measurement"] = "%";
-  humidity["value_template"] = "{{ value_json.temperature }}";
+  humidity["value_template"] = "{{ value_json.temperature | round(1) }}";
   
   // Feels like
   JSONVar feelsLike = new JSONVar();
@@ -201,7 +251,7 @@ void register_MQTT_sensors_to_homeassistant(){
   feelsLike["name"] = "Feels like";
   feelsLike["state_topic"] = "homeassistant/sensor/esp32dev/state";
   feelsLike["unit_of_measurement"] = "°C";
-  feelsLike["value_template"] = "{{ value_json.heatIndex }}";  
+  feelsLike["value_template"] = "{{ value_json.heatIndex | round(1) }}";  
   
   // Luminosity
   JSONVar luminosity = new JSONVar();
@@ -226,14 +276,14 @@ void register_MQTT_sensors_to_homeassistant(){
   tvoc["state_topic"] = "homeassistant/sensor/esp32dev/SGP30/state";
   tvoc["unit_of_measurement"] = "ppb";
   tvoc["value_template"] = "{{ value_json.tvoc }}";  
-  
+    
   // CO2
   JSONVar co2 = new JSONVar();
   co2["unique_id"] = "esp32dev-co2";
   co2["name"] = "eCO2";
   co2["state_topic"] = "homeassistant/sensor/esp32dev/SGP30/state";
   co2["unit_of_measurement"] = "ppm";
-  co2["value_template"] = "{{ value_json.co2 }}";  
+  co2["value_template"] = "{{ value_json.co2 }}"; 
   
   // H2
   JSONVar h2 = new JSONVar();
@@ -253,35 +303,35 @@ void register_MQTT_sensors_to_homeassistant(){
   
   // BME280 Temperature
   JSONVar bme280temperature = new JSONVar();
-  bme280temperature["unique_id"] = "esp32dev-bme280-temp";
+  bme280temperature["unique_id"] = "esp32dev-bmetemp";
   bme280temperature["name"] = "BME280 Temperature";
-  bme280temperature["state_topic"] = "homeassistant/sensor/esp32dev/BME280/state";
+  bme280temperature["state_topic"] = "homeassistant/sensor/esp32dev/BME/state";
   bme280temperature["unit_of_measurement"] = "°C";
-  bme280temperature["value_template"] = "{{ value_json.bme280_temp }}";
+  bme280temperature["value_template"] = "{{ value_json.bme280_temp | round(1) }}";
   
   // BME280 Humidity
   JSONVar bme280Humidity = new JSONVar();
-  bme280Humidity["unique_id"] = "esp32dev-bme280-humidity";
+  bme280Humidity["unique_id"] = "esp32dev-bmehumidity";
   bme280Humidity["name"] = "BME280 Humidity";
-  bme280Humidity["state_topic"] = "homeassistant/sensor/esp32dev/BME280/state";
+  bme280Humidity["state_topic"] = "homeassistant/sensor/esp32dev/BME/state";
   bme280Humidity["unit_of_measurement"] = "%";
-  bme280Humidity["value_template"] = "{{ value_json.bme280_humidity }}";
+  bme280Humidity["value_template"] = "{{ value_json.bme280_humidity | round(1) }}";
   
   // BME280 Preassure
   JSONVar bme280Preassure = new JSONVar();
-  bme280Preassure["unique_id"] = "esp32dev-bme280-pres";
+  bme280Preassure["unique_id"] = "esp32dev-bmepres";
   bme280Preassure["name"] = "BME280 Preassure";
-  bme280Preassure["state_topic"] = "homeassistant/sensor/esp32dev/BME280/state";
+  bme280Preassure["state_topic"] = "homeassistant/sensor/esp32dev/BME/state";
   bme280Preassure["unit_of_measurement"] = "hPa";
-  bme280Preassure["value_template"] = "{{ value_json.bme280_pres }}";
+  bme280Preassure["value_template"] = "{{ value_json.bme280_pres | round(2) }}";
   
   // BME280 Approximate altitude
   JSONVar bme280Altitude= new JSONVar();
-  bme280Altitude["unique_id"] = "esp32dev-bme280-altitude";
+  bme280Altitude["unique_id"] = "esp32dev-bmealtitude";
   bme280Altitude["name"] = "BME280 Altitude";
-  bme280Altitude["state_topic"] = "homeassistant/sensor/esp32dev/BME280/state";
+  bme280Altitude["state_topic"] = "homeassistant/sensor/esp32dev/BME/state";
   bme280Altitude["unit_of_measurement"] = "m";
-  bme280Altitude["value_template"] = "{{ value_json.bme280_altitude }}";
+  bme280Altitude["value_template"] = "{{ value_json.bme280_altitude | round(2) }}";
 
   // Publish sensors to MQTT
   byte sensorCount = 13;
@@ -295,10 +345,10 @@ void register_MQTT_sensors_to_homeassistant(){
     {co2,               "homeassistant/sensor/esp32dev/CO2/config"},
     {h2,                "homeassistant/sensor/esp32dev/H2/config"},
     {ethanol,           "homeassistant/sensor/esp32dev/Ethanol/config"},
-    {bme280temperature, "homeassistant/sensor/esp32dev/BME280Temp/config"},
-    {bme280Humidity,    "homeassistant/sensor/esp32dev/BME280Hum/config"},
-    {bme280Preassure,   "homeassistant/sensor/esp32dev/BME280Pres/config"},
-    {bme280Altitude,    "homeassistant/sensor/esp32dev/BME280Alt/config"},
+    {bme280temperature, "homeassistant/sensor/esp32dev/BMETemp/config"},
+    {bme280Humidity,    "homeassistant/sensor/esp32dev/BMEHum/config"},
+    {bme280Preassure,   "homeassistant/sensor/esp32dev/BMEPres/config"},
+    {bme280Altitude,    "homeassistant/sensor/esp32dev/BMEAlt/config"},
   };
   
   for (byte i = 0; i < sensorCount; i++) {
@@ -315,7 +365,9 @@ void register_MQTT_sensors_to_homeassistant(){
   Serial.println("Home assistant sensors registered.");
 }
 
-// Configures the gain and integration time for the TSL2561
+/* 
+ *  Configures the gain and integration time for the TSL2561
+ */ 
 void configure_tls25621_sensor(void)
 {
   /* You can also manually set the gain or enable auto-gain support */
@@ -355,8 +407,10 @@ void configure_tls25621_sensor(void)
   }
 }
 
+/* 
+ *  BME280 sensor configuration
+ */
 void configure_bme280_sensor() {
-  //status = bme.begin(bme280_ADDRESS_ALT, bme280_CHIPID);
   unsigned status;
   status = bme.begin(BME289_ADDR_FLOAT);
   if (!status) {
@@ -364,40 +418,50 @@ void configure_bme280_sensor() {
   }
 }
 
+/* 
+ *  SGP30 sensor configuration
+ */
 void configure_sgp30_sensor(){
-  Serial.println(SGP30_LIB_VERSION);
-  Serial.println();
-
-  Serial.print("BEGIN:\t");
-  Serial.println(SGP.begin());
-  Serial.print("TEST:\t");
-  Serial.println(SGP.measureTest());
-  Serial.print("FSET:\t");
-  Serial.println(SGP.getFeatureSet(), HEX);
-  SGP.GenericReset();
-
-  Serial.print("DEVID:\t");
-  SGP.getID();
-  
-  for (int i = 0; i < 6; i++){
-    if (SGP._id[i] < 0x10) Serial.print(0);
-    Serial.print(SGP._id[i], HEX);
+   if (!SGP.begin()){
+    Serial.println("Sensor not found");
+    return;
   }
   
-  uint16_t bl_co2 = 0;
-  uint16_t bl_tvoc = 0;
-  bool b = SGP.getBaseline(&bl_co2, &bl_tvoc);
-    
-  Serial.println();
+  // Initials to EEPROM
+  //SGP30_baselines = {57330, 39050};
+  //EEPROM.put(0, SGP30_baselines);
+  //EEPROM.commit();
+  
+  // Read SGP30 baselines from EEPROM
+  EEPROM.get(0, SGP30_baselines);
+  
+  // Serial
+  Serial.print("Found SGP30 serial #");
+  Serial.print(SGP.serialnumber[0], HEX);
+  Serial.print(SGP.serialnumber[1], HEX);
+  Serial.println(SGP.serialnumber[2], HEX);
+  
+  if (!SGP.IAQinit()){
+    Serial.println("IAQ init failed");
+  }
+  
+  // If you have a baseline measurement from 
+  // before you can assign it to start, to 'self-calibrate'
+  Serial.println("Setting SGP30 baselines");
+  Serial.print("eCO2: ");Serial.print(SGP30_baselines.eCO2);Serial.print(" TVOC: ");Serial.println(SGP30_baselines.TVOC);
+  SGP.setIAQBaseline(SGP30_baselines.eCO2, SGP30_baselines.TVOC);
+  
+  // Read temperature and humidity from DHT22
+  DHT22Data dht22 = read_dht();
+  Serial.println("Setting SGP30 absolute humidity");
+  Serial.print("°C: ");Serial.print(dht22.temperature);Serial.print(" RH%: ");Serial.println(dht22.humidity);
+  SGP.setHumidity(getAbsoluteHumidity(dht22.temperature, dht22.humidity));
+  
 }
 
 /*
- * HTTP server handlers
+ * Read DHT22 sensor data and return data struct as JSON
  */
-void handleRoot() {
-  server.send(200, "text/plain", "hello from esp8266!");
-}
-
 void handleDHT22() {
     DHT22Data dht_state = read_dht();
     // Create json object
@@ -415,6 +479,9 @@ void handleDHT22() {
     server.send(200, "text/json", jsonDoc);
 }
 
+/*
+ * Read TSL2561 sensor data and return data struct as JSON
+ */
 void handleTSL2561() {
     TSL2561Data luminosity = read_luminosity();
     // Create json object
@@ -434,6 +501,9 @@ void handleTSL2561() {
     server.send(200, "text/json", jsonDoc);
 }
 
+/*
+ * 404 handler for web server
+ */
 void handleNotFound() {
   String message = "File Not Found\n\n";
   message += "URI: ";
@@ -451,6 +521,9 @@ void handleNotFound() {
   server.send(404, "text/plain", message);
 }
 
+/*
+ * Read DHT22 sensor data and return data struct
+ */
 DHT22Data read_dht() {
   // Reading temperature or humidity takes about 250 milliseconds!
   // Sensor readings may also be up to 2 seconds 'old' (its a very slow sensor)
@@ -478,23 +551,64 @@ DHT22Data read_dht() {
   return data;
 }
 
+// Readings which after to reset baseline
+uint16_t sgp30_readings = 0;
+
+/*
+ * Read SGP30 sensor data and return data struct
+ */
 SGP30Data read_sgp30() {
-  // First 10-20 readings will always be TVOC 0 ppb eCO2 400 ppm. 
-  SGP.measure(true);  
+  // Read temperature and humidity from DHT22
+  DHT22Data dht22 = read_dht();
   
-  uint16_t tvoc_base =0;
-  uint16_t co2_base = 0;
-  SGP.getBaseline(&co2_base, &tvoc_base);
+  Serial.println("Setting SGP30 absolute humidity");
+  Serial.print("°C: ");Serial.print(dht22.temperature);Serial.print(" RH%: ");Serial.println(dht22.humidity);
   
-  float tvoc = SGP.getTVOC();
-  float co2 = SGP.getCO2();
-  float h2 = SGP.getH2();
-  float ethanol = SGP.getEthanol();
+  SGP.setHumidity(getAbsoluteHumidity(dht22.temperature, dht22.humidity));
+
+  // Measure
+  if (!SGP.IAQmeasure()) {
+    Serial.println("Measurement failed");
+  }
+  if (!SGP.IAQmeasureRaw()) {
+    Serial.println("Raw Measurement failed");
+  }
   
-  SGP30Data data = {tvoc, tvoc_base, co2, co2_base, h2, ethanol};
+  // Readings
+  uint16_t tvoc = SGP.TVOC;
+  uint16_t co2 = SGP.eCO2;
+  uint16_t h2 = SGP.rawH2;
+  uint16_t ethanol = SGP.rawEthanol;
+  
+  // Baselines
+  uint16_t TVOC_base;
+  uint16_t eCO2_base ;
+  
+  // Recalibrate baseline once in 24 hours, sensor reading is once a minute
+  sgp30_readings += 1;
+  if (sgp30_readings > 60 * 24) {
+    Serial.println("Reading SGP30 baselines");
+    
+    if (SGP.getIAQBaseline(&eCO2_base, &TVOC_base)) {
+      Serial.print("Baseline values: eCO2: "); Serial.print(eCO2_base); Serial.print(" & TVOC: "); Serial.println(TVOC_base);
+      // Save baselines to EEPROM
+      SGP30_baselines.eCO2 = eCO2_base;
+      SGP30_baselines.TVOC = TVOC_base;
+      EEPROM.put(0, SGP30_baselines);
+    } else {
+      Serial.println("Failed to read baselines");
+    }
+    
+    sgp30_readings = 0;
+  }
+  
+  SGP30Data data = {tvoc, TVOC_base, co2, eCO2_base, h2, ethanol};
   return data;
 }
 
+/*
+ * Read BME280 sensor data and return data struct
+ */
 BME280Data read_bme280() {
   float preassure = bme.readPressure() / 100.0F;
   float humidity = bme.readHumidity();
@@ -505,6 +619,9 @@ BME280Data read_bme280() {
   return data;
 }
 
+/*
+ * Read TSL2561 sensor data and return data struct
+ */
 TSL2561Data read_luminosity(){
   // Get a new sensor event 
   sensors_event_t event;
@@ -528,6 +645,9 @@ TSL2561Data read_luminosity(){
   return data;
 }
 
+/* 
+ * Get UV index with sensor voltage 
+ */
 uint16_t getUvIndex(uint16_t sensorValue){
   uint16_t index = 0;
   
@@ -562,15 +682,28 @@ uint16_t getUvIndex(uint16_t sensorValue){
   return index;
 }
 
+/*
+ * Connect to MTQQ with UID + ID if not already connected
+ */
 void connect_MQTT() {
   // Loop until we're reconnected
   while (!client.connected()) {
-    Serial.print("Attempting MQTT connection...");
+    Serial.print("Attempting MQTT connection with UID: ");
     // Attempt to connect
-    if (client.connect(MQTT_UID)) {
-      Serial.println("connected");
+    char buffer[25]; sprintf(buffer, "%s-%d", MQTT_UID, MQTT_ID);
+    Serial.println(buffer);
+    
+    if (client.connect(buffer)) {
+      Serial.println("MQTT connected");          
+      // Register MQTT sensors
+      if (register_MQTT_sensors) {
+        register_MQTT_sensors_to_homeassistant();
+        register_MQTT_sensors = false;
+      }
     } else {
       // Wait 1 seconds before retrying
+      MQTT_ID += 1;
+      register_MQTT_sensors = true;
       delay(1000);
     }
   }
@@ -583,7 +716,9 @@ long lastMsg = 0;
 unsigned long previousMillis = 0;
 unsigned long interval = 30000;
 
-// Main loop
+/* 
+ *  Main loop
+ */
 void loop(void) {
   unsigned long currentMillis = millis();
   
@@ -596,8 +731,9 @@ void loop(void) {
     WiFi.reconnect();
     
     // Set up MQTT
+    register_MQTT_sensors = true;
     connect_MQTT();
-    
+     
     previousMillis = currentMillis;
   }
   
@@ -617,12 +753,10 @@ void loop(void) {
     // Set up MQTT
     connect_MQTT();
     
-    Serial.println("Staring to publish MTTQ");
-    if(client.connected()) {
-      // Register MQTT sensors
-      register_MQTT_sensors_to_homeassistant();  
-      
+    if(client.connected()) {    
       // Publish to MQTT
+      Serial.println("Staring to publish MTTQ");
+      
       JSONVar json = new JSONVar();
       
       // Temperature
@@ -671,9 +805,10 @@ void loop(void) {
       bme280Json["bme280_alt"] = bme280.approximateAltitude;
       
      MQTTMessage sensors[] = {
-        {json,        "homeassistant/sensor/esp32dev/state"},
-        {sgp30Json,   "homeassistant/sensor/esp32dev/SGP30/state"},
-        {bme280Json,  "homeassistant/sensor/esp32dev/BME280/state"}
+        {json,       "homeassistant/sensor/esp32dev/state"},
+        {sgp30Json,  "homeassistant/sensor/esp32dev/SGP30/state"},
+        {bme280Json, "homeassistant/sensor/esp32dev/BME/state"}
+        
       };
       byte sensorCount = 3;
       
