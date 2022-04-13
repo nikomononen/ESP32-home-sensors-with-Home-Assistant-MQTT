@@ -1,4 +1,4 @@
-# ESP32-homesensors-with-MQTT-esphome
+# ESP32-home-sensors-with-MQTT-Home-Assistant
 ESP32 with sensors to sense the state of the room. Homeassistant integration with MQTT
 
 Sensors
