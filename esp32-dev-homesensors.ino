@@ -579,9 +579,9 @@ SGP30Data read_sgp30() {
   uint16_t h2 = SGP.rawH2;
   uint16_t ethanol = SGP.rawEthanol;
   
-  // Recalibrate baseline once in 24 hours, sensor reading is once a minute
+  // Recalibrate baseline once in 12 hours, sensor reading is once a minute
   sgp30_readings += 1;
-  if (sgp30_readings > 60 * 24) {
+  if (sgp30_readings > 60 * 12) {
     Serial.println("Reading SGP30 baselines");
     uint16_t TVOC_base;
     uint16_t eCO2_base;
@@ -697,10 +697,10 @@ void connect_MQTT() {
         register_MQTT_sensors = false;
       }
     } else {
-      // Wait 1 seconds before retrying
+      // Wait 5 minute before retrying
       MQTT_ID += 1;
       register_MQTT_sensors = true;
-      delay(1000);
+      delay(5*60*1000);
     }
   }
 }
@@ -728,7 +728,7 @@ void loop(void) {
     
     // Set up MQTT
     register_MQTT_sensors = true;
-    connect_MQTT();
+    connect_MQTT(); 
      
     previousMillis = currentMillis;
   }
