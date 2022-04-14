@@ -591,6 +591,7 @@ SGP30Data read_sgp30() {
       SGP30_baselines.eCO2 = eCO2_base;
       SGP30_baselines.TVOC = TVOC_base;
       EEPROM.put(0, SGP30_baselines);
+      EEPROM.commit();
     } else {
       Serial.println("Failed to read baselines");
     }
