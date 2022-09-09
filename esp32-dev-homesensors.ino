@@ -66,8 +66,8 @@ struct BME280Data {
 
 //--- Globals ---//
 // Wifi
-const char* ssid = "<SSID>";
-const char* password = "<PASSWORD>";
+const char* ssid = "";
+const char* password = "";
 
 WebServer server(80);
 // MQTT client attached to wificlient
@@ -90,7 +90,7 @@ void mqtt_callback(char* topic, byte* message, unsigned int length) {
 }
 
 // MQTT Broker IP address
-IPAddress mqtt_server(0, 0, 0, 0);
+IPAddress mqtt_server(127, 0, 0, 1);
 const char* MQTT_UID = "esp32dev";
 
 // ID for MQTT connection
@@ -105,7 +105,7 @@ SGP30Baselines SGP30_baselines;
 
 // DHT22 sensor
 #define DHTTYPE DHT22
-int DHTPIN = 4;
+int DHTPIN = 5;
 DHT dht(DHTPIN, DHTTYPE);
 
 /*
@@ -140,7 +140,7 @@ uint32_t getAbsoluteHumidity(float temperature, float humidity) {
 #define TSL2561_UNIQUE_ID 12345
 
 // UV sensor
-uint16_t UVPIN = 33;
+uint16_t UVPIN = 4; //33;
 
 // The address will be different depending on whether you leave
 // the ADDR pin float (addr 0x39), or tie it to ground or vcc. In those cases
@@ -291,7 +291,7 @@ void register_MQTT_sensors_to_homeassistant(){
   h2["name"] = "H2";
   h2["state_topic"] = "homeassistant/sensor/esp32dev/SGP30/state";
   h2["unit_of_measurement"] = "ppm";
-  h2["value_template"] = "{{ value_json.h2 }}";  
+  h2["value_template"] = "{{ value_json.h2 | round(1) }}";  
   
   // Ethanol
   JSONVar ethanol = new JSONVar();
@@ -299,7 +299,7 @@ void register_MQTT_sensors_to_homeassistant(){
   ethanol["name"] = "Ethanol";
   ethanol["state_topic"] = "homeassistant/sensor/esp32dev/SGP30/state";
   ethanol["unit_of_measurement"] = "ppm";
-  ethanol["value_template"] = "{{ value_json.ethanol }}";  
+  ethanol["value_template"] = "{{ value_json.ethanol | round(1) }}";  
   
   // BME280 Temperature
   JSONVar bme280temperature = new JSONVar();
@@ -323,7 +323,7 @@ void register_MQTT_sensors_to_homeassistant(){
   bme280Preassure["name"] = "BME280 Preassure";
   bme280Preassure["state_topic"] = "homeassistant/sensor/esp32dev/BME/state";
   bme280Preassure["unit_of_measurement"] = "hPa";
-  bme280Preassure["value_template"] = "{{ value_json.bme280_pres | round(2) }}";
+  bme280Preassure["value_template"] = "{{ value_json.bme280_pres | round(1) }}";
   
   // BME280 Approximate altitude
   JSONVar bme280Altitude= new JSONVar();
@@ -331,7 +331,7 @@ void register_MQTT_sensors_to_homeassistant(){
   bme280Altitude["name"] = "BME280 Altitude";
   bme280Altitude["state_topic"] = "homeassistant/sensor/esp32dev/BME/state";
   bme280Altitude["unit_of_measurement"] = "m";
-  bme280Altitude["value_template"] = "{{ value_json.bme280_altitude | round(2) }}";
+  bme280Altitude["value_template"] = "{{ value_json.bme280_altitude | round(1) }}";
 
   // Publish sensors to MQTT
   byte sensorCount = 13;
@@ -403,7 +403,7 @@ void configure_tls25621_sensor(void)
   {
     // If event.light = 0 lux the sensor is probably saturated
     //   and no reliable data could be generated! 
-    Serial.println("Sensor overload");
+    Serial.println("Sensor TSL overload");
   }
 }
 
@@ -423,7 +423,7 @@ void configure_bme280_sensor() {
  */
 void configure_sgp30_sensor(){
    if (!SGP.begin()){
-    Serial.println("Sensor not found");
+    Serial.println("Sensor SPG30 not found");
     return;
   }
   
@@ -701,7 +701,7 @@ void connect_MQTT() {
       // Wait 5 minute before retrying
       MQTT_ID += 1;
       register_MQTT_sensors = true;
-      delay(5*60*1000);
+      delay(5 * 60 * 1000);
     }
   }
 }
@@ -711,7 +711,7 @@ long lastMsg = 0;
 
 // To detect if wifi is down
 unsigned long previousMillis = 0;
-unsigned long interval = 30000;
+unsigned long interval = 1000 * 60 * 5; // 5min
 
 /* 
  *  Main loop
@@ -734,23 +734,25 @@ void loop(void) {
     previousMillis = currentMillis;
   }
   
-  // Handle HTTP requests
+  // Handle HTTP requests always
   server.handleClient();
   
   // Publish to MTQQ every 1min
-  if (currentMillis - lastMsg > 1000*60) {
+  if (currentMillis - lastMsg > 1000 * 60) {
     lastMsg = currentMillis;
-   
-    // Read sensors
-    DHT22Data temperature = read_dht();
-    TSL2561Data luminosity = read_luminosity();
-    SGP30Data sgp30 = read_sgp30();
-    BME280Data bme280 = read_bme280();
-
-    // Set up MQTT
+        
+    // Set up MQTT if not already connected
     connect_MQTT();
-    
-    if(client.connected()) {    
+
+    // If we can connect to MQTT read sensor data
+    if(client.connected()) {
+      
+      // Read sensors
+      DHT22Data temperature = read_dht();
+      TSL2561Data luminosity = read_luminosity();
+      SGP30Data sgp30 = read_sgp30();
+      BME280Data bme280 = read_bme280();
+      
       // Publish to MQTT
       Serial.println("Staring to publish MTTQ");
       
@@ -781,11 +783,11 @@ void loop(void) {
       sgp30Json["co2"] = sgp30.co2;
       sgp30Json["co2Base"] = sgp30.co2_base;
 
-      // H2
-      sgp30Json["h2"] = sgp30.h2;
+      // H2 ppb to ppm conversion
+      sgp30Json["h2"] = ((float) sgp30.h2) / 1000.0;
       
-      // Ethanol
-      sgp30Json["ethanol"] = sgp30.ethanol;
+      // Ethanol ppb to ppm conversion
+      sgp30Json["ethanol"] = ((float) sgp30.ethanol) / 1000.0;
 
       JSONVar bme280Json = new JSONVar();
       
@@ -821,6 +823,12 @@ void loop(void) {
       }
 
       Serial.println("Finished to publish MTTQ");
+    }
+    
+    // Restart ESP every 4 days to clean up sensor data and memory
+    if (currentMillis > (1000 * 60 * 60 * 24 * 4)) {
+      Serial.println("Rebooting...");
+      ESP.restart();
     }
   }
 };
