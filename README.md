@@ -7,3 +7,7 @@ Sensors
 - TSL2561
 - GY-SGP30
 - GUVA-S12SD
+
+[Front side of board](https://cloud.iltavarjo.net/s/29drGPgMr3BEgGC)
+
+[Back side side of board](https://cloud.iltavarjo.net/s/ckXxKMWrFPEXLGT)
